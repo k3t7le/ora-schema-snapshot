@@ -2,13 +2,16 @@ oracle:
   host: "192.168.10.79"
   port: 1521
   service_name: "ORCLPDB"
-  username: "hmes"
-  password: "hmes"
+  username: "ORASNAP_SVC"
+  password: "StrongPassword_2026"
 
 scope:
   discovery_mode: "hybrid"
   include_schemas:
     - "HMES"
+    - "ACETECH"
+    - "EDIP"
+    - "SFA_TEST"
   exclude_schemas:
     - "SYS"
     - "SYSTEM"
@@ -41,3 +44,8 @@ git:
 logs:
   retention_days: 30
 
+audit:
+  enabled: true
+  root: null
+  table: "DDL_AUDIT_LOG"
+  state_file: ".orasnap_audit_state.json"

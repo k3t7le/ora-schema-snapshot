@@ -41,3 +41,8 @@ git:
 logs:
   retention_days: 30
 
+audit:
+  enabled: true
+  root: null
+  table: "DDL_AUDIT_LOG"
+  state_file: ".orasnap_audit_state.json"

@@ -69,12 +69,21 @@ class LogsConfig:
 
 
 @dataclass(frozen=True)
+class AuditConfig:
+    enabled: bool = True
+    root: Path | None = None
+    table: str = "DDL_AUDIT_LOG"
+    state_file: str = ".orasnap_audit_state.json"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     oracle: OracleConfig
     scope: ScopeConfig
     output: OutputConfig
     git: GitConfig
     logs: LogsConfig
+    audit: AuditConfig
 
 
 def _to_upper_list(raw: Any) -> list[str]:
@@ -106,6 +115,7 @@ def load_config(config_path: str | Path) -> AppConfig:
     output_raw = raw.get("output") or {}
     git_raw = raw.get("git") or {}
     logs_raw = raw.get("logs") or {}
+    audit_raw = raw.get("audit") or {}
 
     try:
         oracle = OracleConfig(
@@ -158,5 +168,18 @@ def load_config(config_path: str | Path) -> AppConfig:
         raise ConfigError("logs.retention_days must be >= 1.")
     logs = LogsConfig(retention_days=retention_days)
 
-    return AppConfig(oracle=oracle, scope=scope, output=output, git=git, logs=logs)
+    audit_root_raw = audit_raw.get("root")
+    audit_root = _resolve_path(audit_root_raw, base_dir) if audit_root_raw else None
+    audit_table = str(audit_raw.get("table", "DDL_AUDIT_LOG")).strip() or "DDL_AUDIT_LOG"
+    audit_state_file = (
+        str(audit_raw.get("state_file", ".orasnap_audit_state.json")).strip()
+        or ".orasnap_audit_state.json"
+    )
+    audit = AuditConfig(
+        enabled=bool(audit_raw.get("enabled", True)),
+        root=audit_root,
+        table=audit_table,
+        state_file=audit_state_file,
+    )
 
+    return AppConfig(oracle=oracle, scope=scope, output=output, git=git, logs=logs, audit=audit)

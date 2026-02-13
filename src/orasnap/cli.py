@@ -42,6 +42,7 @@ def _print_summary(result) -> None:
     print(f"written={result.written_count}")
     print(f"deleted={result.deleted_count}")
     print(f"unchanged={result.unchanged_count}")
+    print(f"audit_exported={result.audit_exported_count}")
     print(f"committed={result.committed}")
     print(f"pushed={result.pushed}")
     if result.log_file:
@@ -71,4 +72,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

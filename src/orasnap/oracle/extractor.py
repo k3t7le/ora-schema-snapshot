@@ -29,6 +29,8 @@ class ExtractionResult:
 
 
 class OracleMetadataExtractor:
+    _bulk_chunk_size = 500
+
     def __init__(
         self,
         oracle_config: OracleConfig,
@@ -47,6 +49,10 @@ class OracleMetadataExtractor:
 
     def _metadata_type(self, object_type: str) -> str:
         return METADATA_TYPE_MAP.get(object_type.upper(), object_type.upper())
+
+    @staticmethod
+    def _object_key(db_object: DbObject) -> tuple[str, str, str]:
+        return (db_object.owner, db_object.object_type, db_object.object_name)
 
     def _should_bundle_table_related(self) -> bool:
         object_types = {item.upper() for item in self.scope_config.object_types}
@@ -150,6 +156,83 @@ class OracleMetadataExtractor:
             return value.read()
         return str(value)
 
+    def _extract_ddl_bulk(
+        self,
+        cursor: "oracledb.Cursor",
+        objects: list[DbObject],
+    ) -> tuple[dict[tuple[str, str, str], str], list[DbObject]]:
+        if not objects:
+            return {}, []
+
+        grouped: dict[tuple[str, str], list[DbObject]] = {}
+        for db_object in objects:
+            grouped.setdefault((db_object.owner, db_object.object_type), []).append(db_object)
+
+        extracted: dict[tuple[str, str, str], str] = {}
+        failed_objects: list[DbObject] = []
+
+        for (owner, object_type), group in grouped.items():
+            metadata_type = self._metadata_type(object_type)
+            for start in range(0, len(group), self._bulk_chunk_size):
+                chunk = group[start : start + self._bulk_chunk_size]
+                object_names = [item.object_name for item in chunk]
+                name_placeholders = ", ".join(
+                    f":{index}" for index in range(5, 5 + len(object_names))
+                )
+                sql = f"""
+                    SELECT OBJECT_NAME, DBMS_METADATA.GET_DDL(:1, OBJECT_NAME, :2)
+                    FROM ALL_OBJECTS
+                    WHERE OWNER = :3
+                      AND OBJECT_TYPE = :4
+                      AND GENERATED = 'N'
+                      AND OBJECT_NAME IN ({name_placeholders})
+                    ORDER BY OBJECT_NAME
+                """
+                try:
+                    cursor.execute(
+                        sql,
+                        [metadata_type, owner, owner, object_type, *object_names],
+                    )
+                    rows = cursor.fetchall()
+                except Exception as exc:
+                    self.logger.warning(
+                        "Bulk DDL extraction failed for %s.%s chunk(size=%s): %s",
+                        owner,
+                        object_type,
+                        len(chunk),
+                        exc,
+                    )
+                    failed_objects.extend(chunk)
+                    continue
+
+                by_name: dict[str, str] = {}
+                for object_name, value in rows:
+                    if value is None:
+                        continue
+                    if hasattr(value, "read"):
+                        by_name[str(object_name)] = value.read()
+                    else:
+                        by_name[str(object_name)] = str(value)
+
+                missing: list[DbObject] = []
+                for db_object in chunk:
+                    ddl = by_name.get(db_object.object_name)
+                    if ddl is None:
+                        missing.append(db_object)
+                        continue
+                    extracted[self._object_key(db_object)] = ddl
+
+                if missing:
+                    self.logger.warning(
+                        "Bulk DDL extraction missing %s object(s) for %s.%s. Falling back to per-object extraction.",
+                        len(missing),
+                        owner,
+                        object_type,
+                    )
+                    failed_objects.extend(missing)
+
+        return extracted, failed_objects
+
     def _extract_table_comments(self, cursor: "oracledb.Cursor", db_object: DbObject) -> list[str]:
         owner = db_object.owner
         table_name = db_object.object_name
@@ -204,7 +287,7 @@ class OracleMetadataExtractor:
         if "INDEX" not in object_types:
             return []
 
-        statements: list[str] = []
+        index_objects: list[DbObject] = []
         cursor.execute(
             """
             SELECT OWNER, INDEX_NAME
@@ -217,26 +300,45 @@ class OracleMetadataExtractor:
             [db_object.owner, db_object.object_name],
         )
         for index_owner, index_name in cursor.fetchall():
-            index_object = DbObject(
-                owner=str(index_owner).upper(),
-                object_type="INDEX",
-                object_name=str(index_name),
-            )
-            try:
-                statements.append(self._extract_ddl(cursor, index_object).strip())
-            except Exception as exc:  # pragma: no cover - integration path.
-                self.logger.warning(
-                    "INDEX extraction failed for %s.%s (table=%s.%s): %s",
-                    index_object.owner,
-                    index_object.object_name,
-                    db_object.owner,
-                    db_object.object_name,
-                    exc,
+            index_objects.append(
+                DbObject(
+                    owner=str(index_owner).upper(),
+                    object_type="INDEX",
+                    object_name=str(index_name),
                 )
+            )
+
+        if not index_objects:
+            return []
+
+        statements: list[str] = []
+        bulk_ddls, _ = self._extract_ddl_bulk(cursor, index_objects)
+        for index_object in index_objects:
+            key = self._object_key(index_object)
+            ddl = bulk_ddls.get(key)
+            if ddl is None:
+                try:
+                    ddl = self._extract_ddl(cursor, index_object)
+                except Exception as exc:  # pragma: no cover - integration path.
+                    self.logger.warning(
+                        "INDEX extraction failed for %s.%s (table=%s.%s): %s",
+                        index_object.owner,
+                        index_object.object_name,
+                        db_object.owner,
+                        db_object.object_name,
+                        exc,
+                    )
+                    continue
+            statements.append(ddl.strip())
         return statements
 
-    def _extract_table_bundle_ddl(self, cursor: "oracledb.Cursor", db_object: DbObject) -> str:
-        base_ddl = self._extract_ddl(cursor, db_object).strip()
+    def _extract_table_bundle_ddl(
+        self,
+        cursor: "oracledb.Cursor",
+        db_object: DbObject,
+        base_ddl: str | None = None,
+    ) -> str:
+        base_ddl = (base_ddl if base_ddl is not None else self._extract_ddl(cursor, db_object)).strip()
         comments = self._extract_table_comments(cursor, db_object)
         indexes = self._extract_table_indexes(cursor, db_object)
 
@@ -265,12 +367,18 @@ class OracleMetadataExtractor:
             objects = self._discover_objects(cursor)
             self.logger.info("Discovered %s objects.", len(objects))
 
-            for db_object in objects:
+            bulk_ddls, _ = self._extract_ddl_bulk(cursor, objects)
+            total_objects = len(objects)
+            for index, db_object in enumerate(objects, start=1):
                 try:
+                    key = self._object_key(db_object)
+                    base_ddl = bulk_ddls.get(key)
+                    if base_ddl is None:
+                        base_ddl = self._extract_ddl(cursor, db_object)
                     if db_object.object_type == "TABLE":
-                        ddl = self._extract_table_bundle_ddl(cursor, db_object)
+                        ddl = self._extract_table_bundle_ddl(cursor, db_object, base_ddl=base_ddl)
                     else:
-                        ddl = self._extract_ddl(cursor, db_object)
+                        ddl = base_ddl
                     items.append(ExtractedDdl(db_object=db_object, ddl=ddl))
                 except Exception as exc:  # pragma: no cover - integration path.
                     message = (
@@ -278,8 +386,9 @@ class OracleMetadataExtractor:
                     )
                     failures.append(message)
                     self.logger.warning("DDL extraction failed: %s", message)
+                if index % 50 == 0 or index == total_objects:
+                    self.logger.info("Extraction progress: %s/%s", index, total_objects)
         finally:
             connection.close()
 
         return ExtractionResult(items=items, failures=failures)
-
