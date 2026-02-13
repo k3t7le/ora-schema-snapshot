@@ -1,0 +1,43 @@
+oracle:
+  host: "127.0.0.1"
+  port: 1521
+  service_name: "ORCLPDB"
+  username: "ORASNAP_SVC"
+  password: "CHANGE_ME"
+
+scope:
+  discovery_mode: "hybrid"
+  include_schemas:
+    - "HMES"
+  exclude_schemas:
+    - "SYS"
+    - "SYSTEM"
+  object_types:
+    - "TABLE"
+    - "VIEW"
+    - "INDEX"
+    - "SEQUENCE"
+    - "TRIGGER"
+    - "SYNONYM"
+    - "TYPE"
+    - "TYPE BODY"
+    - "PROCEDURE"
+    - "FUNCTION"
+    - "PACKAGE"
+    - "PACKAGE BODY"
+    - "MATERIALIZED VIEW"
+
+output:
+  snapshot_root: "D:/dev/snapshots/ORCLPDB"
+  line_ending: "LF"
+
+git:
+  repo_path: "D:/dev/snapshots"
+  branch: null
+  commit_message_template: "snapshot: {timestamp}"
+  auto_push: true
+  remote: "origin"
+
+logs:
+  retention_days: 30
+

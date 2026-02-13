@@ -1,0 +1,2 @@
+[console_scripts]
+orasnap = orasnap.cli:main
