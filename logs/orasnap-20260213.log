@@ -1,3 +1,0 @@
-2026-02-13 13:06:49,377 INFO Snapshot run started. dry_run=False
-2026-02-13 13:06:49,683 INFO Discovered 7 objects.
-2026-02-13 13:06:56,998 INFO Snapshot run finished. extracted=7 failed=0 written=2 deleted=0 unchanged=5 committed=True pushed=True
